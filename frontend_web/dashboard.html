@@ -17,9 +17,35 @@
     <div class="row">
         <aside class="col-md-2 bg-light border-end" style="min-height: 100vh;">
             <div class="p-3">
-                <button class="btn btn-sm btn-success w-100 mb-2" id="addCam">Adicionar câmera</button>
-                <button class="btn btn-sm btn-danger w-100 mb-3" id="removeCam">Remover câmera</button>
-                <ul class="list-group" id="cameraList"></ul>
+                                <button class="btn btn-sm btn-success w-100 mb-2" id="addCam">Adicionar câmera</button>
+                                <button class="btn btn-sm btn-danger w-100 mb-3" id="removeCam">Remover câmera</button>
+                                <ul class="list-group" id="cameraList"></ul>
+
+                                <!-- Modal de cadastro de câmera -->
+                                <div class="modal fade" id="cameraModal" tabindex="-1" aria-labelledby="cameraModalLabel" aria-hidden="true">
+                                    <div class="modal-dialog">
+                                        <div class="modal-content">
+                                            <div class="modal-header">
+                                                <h5 class="modal-title" id="cameraModalLabel">Cadastrar nova câmera</h5>
+                                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                            </div>
+                                            <div class="modal-body">
+                                                <form id="cameraForm">
+                                                    <div class="mb-3">
+                                                        <label for="camName" class="form-label">Nome</label>
+                                                        <input type="text" class="form-control" id="camName" required>
+                                                    </div>
+                                                    <div class="mb-3">
+                                                        <label for="camUrl" class="form-label">URL RTSP</label>
+                                                        <input type="text" class="form-control" id="camUrl" required>
+                                                    </div>
+                                                    <div id="camMsg" class="text-danger mb-2"></div>
+                                                    <button type="submit" class="btn btn-primary">Cadastrar</button>
+                                                </form>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
             </div>
         </aside>
         <main class="col-md-10 p-3 text-center">
@@ -31,55 +57,80 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 
-const token = localStorage.getItem('token');
 
+const token = localStorage.getItem('token');
 if (!token) {
-    window.location.href = "/login"; // força login se não tiver token
-} else {
-    // Atualiza o src da imagem com o token na URL
-    document.getElementById("video").src = `/video_feed?token=${token}`;
+    window.location.href = "/login";
 }
 const video = document.getElementById('video');
-video.src = `/video_feed?token=${token}`;
+
 
 async function loadCameras() {
     const res = await fetch('/cameras', { headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
     const list = document.getElementById('cameraList');
     list.innerHTML = '';
-    data.cameras.forEach(id => {
+    data.cameras.forEach(cam => {
         const li = document.createElement('li');
         li.className = 'list-group-item list-group-item-action';
-        li.textContent = `Câmera ${id}`;
-        li.onclick = () => selectCamera(id);
+        li.textContent = `${cam.name}`;
+        li.onclick = () => selectCamera(cam.id, cam.rtsp_url);
         list.appendChild(li);
     });
 }
 
-async function selectCamera(id) {
-    await fetch('/select_camera', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ camera: id })
-    });
+
+async function selectCamera(id, rtsp_url) {
+    // Atualiza o stream para a câmera selecionada
+    video.src = `/video_feed?token=${token}&camera_id=${id}`;
 }
 
+
+// Abre o modal de cadastro
 document.getElementById('addCam').onclick = () => {
-    const list = document.getElementById('cameraList');
-    const newId = list.children.length + 1;
-    const li = document.createElement('li');
-    li.className = 'list-group-item list-group-item-action';
-    li.textContent = `Câmera ${newId}`;
-    li.onclick = () => selectCamera(newId);
-    list.appendChild(li);
+    document.getElementById('camName').value = '';
+    document.getElementById('camUrl').value = '';
+    document.getElementById('camMsg').textContent = '';
+    const modal = new bootstrap.Modal(document.getElementById('cameraModal'));
+    modal.show();
 };
 
+// Submete o cadastro de câmera
+document.getElementById('cameraForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('camName').value.trim();
+    const rtsp_url = document.getElementById('camUrl').value.trim();
+    const msg = document.getElementById('camMsg');
+    msg.textContent = '';
+    if (!name || !rtsp_url) {
+        msg.textContent = 'Preencha todos os campos.';
+        return;
+    }
+    try {
+        const res = await fetch('/add_camera', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ name, rtsp_url })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            bootstrap.Modal.getInstance(document.getElementById('cameraModal')).hide();
+            loadCameras();
+        } else {
+            msg.textContent = data.msg || 'Erro ao cadastrar câmera.';
+        }
+    } catch (err) {
+        msg.textContent = 'Erro de conexão.';
+    }
+};
+
+
+// (Opcional) Remover câmera pode ser implementado depois
 document.getElementById('removeCam').onclick = () => {
-    const list = document.getElementById('cameraList');
-    if (list.lastChild) list.removeChild(list.lastChild);
+    alert('Funcionalidade de remoção ainda não implementada.');
 };
 
 document.getElementById('logoutBtn').onclick = () => {

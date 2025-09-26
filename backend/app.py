@@ -1,3 +1,76 @@
+# --- Centroid Tracker Simples ---
+from collections import OrderedDict
+import numpy as np
+
+class CentroidTracker:
+    def __init__(self, maxDisappeared=40):
+        self.nextObjectID = 0
+        self.objects = OrderedDict()
+        self.disappeared = OrderedDict()
+        self.maxDisappeared = maxDisappeared
+
+    def register(self, centroid):
+        self.objects[self.nextObjectID] = centroid
+        self.disappeared[self.nextObjectID] = 0
+        self.nextObjectID += 1
+
+    def deregister(self, objectID):
+        del self.objects[objectID]
+        del self.disappeared[objectID]
+
+    def update(self, rects):
+        if len(rects) == 0:
+            for objectID in list(self.disappeared.keys()):
+                self.disappeared[objectID] += 1
+                if self.disappeared[objectID] > self.maxDisappeared:
+                    self.deregister(objectID)
+            return self.objects
+
+        inputCentroids = np.zeros((len(rects), 2), dtype="int")
+        for (i, (startX, startY, endX, endY)) in enumerate(rects):
+            cX = int((startX + endX) / 2.0)
+            cY = int((startY + endY) / 2.0)
+            inputCentroids[i] = (cX, cY)
+
+        if len(self.objects) == 0:
+            for i in range(0, len(inputCentroids)):
+                self.register(inputCentroids[i])
+        else:
+            objectIDs = list(self.objects.keys())
+            objectCentroids = list(self.objects.values())
+            D = np.linalg.norm(np.array(objectCentroids)[:, np.newaxis] - inputCentroids, axis=2)
+            rows = D.min(axis=1).argsort()
+            cols = D.argmin(axis=1)[rows]
+            usedRows = set()
+            usedCols = set()
+            for (row, col) in zip(rows, cols):
+                if row in usedRows or col in usedCols:
+                    continue
+                objectID = objectIDs[row]
+                self.objects[objectID] = inputCentroids[col]
+                self.disappeared[objectID] = 0
+                usedRows.add(row)
+                usedCols.add(col)
+            unusedRows = set(range(0, D.shape[0])).difference(usedRows)
+            unusedCols = set(range(0, D.shape[1])).difference(usedCols)
+            if D.shape[0] >= D.shape[1]:
+                for row in unusedRows:
+                    objectID = objectIDs[row]
+                    self.disappeared[objectID] += 1
+                    if self.disappeared[objectID] > self.maxDisappeared:
+                        self.deregister(objectID)
+            else:
+                for col in unusedCols:
+                    self.register(inputCentroids[col])
+        return self.objects
+
+# --- Fim Centroid Tracker ---
+
+# Instância global do tracker e histórico de cruzamentos
+ct = CentroidTracker(maxDisappeared=20)
+track_history = {}
+total_in = 0
+total_out = 0
 import cv2
 from flask import Flask, Response, request, jsonify, render_template
 import os
@@ -51,36 +124,74 @@ except Exception as e:
     model = None
     print(f"Model not loaded: {e}")
 
+
+
 def detect_objects(frame):
-    """Detecta facas ou tesouras e mostra alerta visual."""
+    """Detecta pessoas, faz tracking e conta entradas/saídas na metade direita (ROI)."""
+    global total_in, total_out, track_history
     if model is None:
         return frame
 
     results = model(frame)[0]
     alerta_ativo = False
+    h, w = frame.shape[:2]
+    # Linha de contagem: vertical no meio do frame
+    line_x = w // 2
+    cv2.line(frame, (line_x, 0), (line_x, h), (255, 0, 0), 2)
 
+    rects = []
     for box in results.boxes.data.tolist():
         x1, y1, x2, y2, score, cls = box
         classe = int(cls)
-
-        if classe in (43, 76):  # 43: faca, 76: tesoura
+        if classe == 0:  # pessoa
+            rects.append((int(x1), int(y1), int(x2), int(y2)))
+        # Alerta para faca/tesoura
+        if classe in (43, 76):
             alerta_ativo = True
             cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 2)
             cv2.putText(frame, f"ALERTA: {int(cls)} {score:.2f}", (int(x1), int(y1) - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
 
+    objects = ct.update(rects)
+    # Para cada objeto rastreado
+    for objectID, centroid in objects.items():
+        text = f"ID {objectID}"
+        cv2.putText(frame, text, (centroid[0] - 10, centroid[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.circle(frame, (centroid[0], centroid[1]), 4, (0, 255, 0), -1)
+        prev = track_history.get(objectID, None)
+        # Se já tem histórico, verifica cruzamento da linha
+        if prev is not None:
+            if prev < line_x and centroid[0] >= line_x:
+                total_in += 1
+            elif prev >= line_x and centroid[0] < line_x:
+                total_out += 1
+        track_history[objectID] = centroid[0]
+
     if alerta_ativo:
         print("🚨 OBJETO PERIGOSO DETECTADO! (faca ou tesoura)")
-
-        # Exibe um alerta na tela no topo do frame
         cv2.putText(frame, "!!! ALERTA: OBJETO DETECTADO !!!", (50, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
 
+    # Exibe contadores
+    cv2.putText(frame, f'Entradas: {total_in}', (50, 100),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,255,0), 3)
+    cv2.putText(frame, f'Saidas: {total_out}', (50, 150),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,0,255), 3)
+    cv2.putText(frame, f'Dentro: {total_in - total_out}', (50, 200),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255,255,0), 3)
     return frame
 
 
-def gen_frames():
-    cap = cv2.VideoCapture(0)
+def gen_frames(rtsp_url=None):
+    # Se não passar URL ou se a URL não for RTSP, usa webcam local
+    use_webcam = False
+    if not rtsp_url or rtsp_url.strip() == '' or rtsp_url.startswith('http://'):
+        use_webcam = True
+    cap = cv2.VideoCapture(0) if use_webcam else cv2.VideoCapture(rtsp_url)
+    # Se não conseguir abrir, faz fallback para webcam
+    if not cap.isOpened() and not use_webcam:
+        cap = cv2.VideoCapture(0)
     while True:
         success, frame = cap.read()
         if not success:
@@ -136,7 +247,13 @@ def login():
 @app.route('/video_feed')
 @jwt_required(locations=['query_string'])  # ESSENCIAL
 def video_feed():
-    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    camera_id = request.args.get('camera_id', type=int)
+    rtsp_url = None
+    if camera_id:
+        camera = Camera.query.get(camera_id)
+        if camera:
+            rtsp_url = camera.rtsp_url
+    return Response(gen_frames(rtsp_url), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/cameras')
 @jwt_required()
